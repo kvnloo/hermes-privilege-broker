@@ -49,7 +49,7 @@ class Broker:
         row = self.ledger.get(request_id)
         if not row or row["state"] != "pending":
             raise RequestError("not pending")
-        if request_digest is not None and request_digest != row["request_digest"]:
+        if request_digest is None or request_digest != row["request_digest"]:
             raise RequestError("request mutation")
         token = secrets.token_urlsafe(32)
         self.grants[token] = {**row, "rid": request_id, "expires": time.monotonic() + self.ttl}

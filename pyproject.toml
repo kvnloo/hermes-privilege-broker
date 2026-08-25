@@ -12,11 +12,12 @@ license = {text = "Apache-2.0"}
 [project.scripts]
 hermes-privilege-broker = "hermes_privilege_broker.cli:main"
 hermes-privilege-broker-daemon = "hermes_privilege_broker.daemon:main"
-hermes-privilege-operator-telegram = "hermes_privilege_operator.telegram:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+pythonpath = ["src", "operator/src"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["hermes_privilege_broker*"]

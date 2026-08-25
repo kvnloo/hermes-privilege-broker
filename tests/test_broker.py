@@ -73,13 +73,34 @@ def test_requester_and_operator_authorities_are_separate(tmp_path):
     b = make_broker(tmp_path)
     requester = Identity(1001, os.getpid(), 7)
     operator = Identity(1002, os.getpid(), 7)
-    b.submit(req(), requester)
+    digest = b.submit(req(), requester)
     with pytest.raises(RequestError, match="requester"):
         b.submit(req("r2"), operator)
     with pytest.raises(RequestError, match="operator"):
         b.approve("r1", requester)
-    grant = b.approve("r1", operator)
+    grant = b.approve("r1", operator, digest)
     assert grant
+
+
+def test_operator_must_approve_the_exact_canonical_digest(tmp_path):
+    b = make_broker(tmp_path)
+    requester = Identity(1001, os.getpid(), 7)
+    operator = Identity(1002, os.getpid(), 7)
+    digest = b.submit(req(), requester)
+    with pytest.raises(RequestError, match="request mutation"):
+        b.approve("r1", operator)
+    with pytest.raises(RequestError, match="request mutation"):
+        b.approve("r1", operator, "0" * 64)
+    assert b.approve("r1", operator, digest)
+
+
+def test_operator_frontend_is_not_in_broker_distribution():
+    root = Path(__file__).parents[1]
+    broker_project = (root / "pyproject.toml").read_text()
+    operator_project = (root / "operator" / "pyproject.toml").read_text()
+    assert 'include = ["hermes_privilege_broker*"]' in broker_project
+    assert 'name = "hermes-privilege-operator-telegram"' in operator_project
+    assert 'hermes-privilege-broker' in operator_project
 
 
 def test_socket_authority_comes_from_kernel_peer_credentials():
@@ -120,13 +141,13 @@ def test_malformed_catalog_bounds_fail_closed(tmp_path):
 def test_grant_is_single_use_expiring_and_mutation_bound(tmp_path):
     b = make_broker(tmp_path, ttl=0.01)
     i, o = Identity(1001, 10, 20), Identity(1002, 11, 21)
-    b.submit(req(), i); token = b.approve("r1", o)
+    digest = b.submit(req(), i); token = b.approve("r1", o, digest)
     with pytest.raises(RequestError, match="mutation"):
         b.consume(token, req(message="changed"), i, execute=False)
     time.sleep(0.02)
     with pytest.raises(RequestError, match="expired"):
         b.consume(token, req(), i, execute=False)
-    b.submit(req("r2"), i); token = b.approve("r2", o)
+    digest = b.submit(req("r2"), i); token = b.approve("r2", o, digest)
     b.consume(token, req("r2"), i, execute=False)
     with pytest.raises(RequestError, match="replay"):
         b.consume(token, req("r2"), i, execute=False)
@@ -135,7 +156,7 @@ def test_grant_is_single_use_expiring_and_mutation_bound(tmp_path):
 def test_restart_marks_reserved_or_running_ambiguous_and_revokes_grants(tmp_path):
     b = make_broker(tmp_path)
     i, o = Identity(1001, 10, 20), Identity(1002, 11, 21)
-    b.submit(req(), i); token = b.approve("r1", o)
+    digest = b.submit(req(), i); token = b.approve("r1", o, digest)
     b.reserve_for_test(token, req(), i)
     b2 = Broker(b.catalog, Ledger(tmp_path / "ledger.sqlite", trusted_uid=os.getuid(), allow_unsafe_ancestors=True), requester_uids={1001}, operator_uids={1002})
     assert b2.status("r1")["state"] == "ambiguous"
@@ -146,7 +167,7 @@ def test_restart_marks_reserved_or_running_ambiguous_and_revokes_grants(tmp_path
 def test_ledger_failure_prevents_execution(tmp_path, monkeypatch):
     b = make_broker(tmp_path)
     i, o = Identity(1001, 10, 20), Identity(1002, 11, 21)
-    b.submit(req(), i); token = b.approve("r1", o)
+    digest = b.submit(req(), i); token = b.approve("r1", o, digest)
     monkeypatch.setattr(b.ledger, "transition", lambda *a, **k: (_ for _ in ()).throw(LedgerError("disk")))
     with pytest.raises(LedgerError):
         b.consume(token, req(), i)
@@ -186,6 +207,6 @@ def test_telegram_rendering_is_inert_and_bounded():
 def test_exact_harmless_operation(tmp_path):
     b = make_broker(tmp_path)
     i, o = Identity(1001, 10, 20), Identity(1002, 11, 21)
-    b.submit(req(), i); token = b.approve("r1", o)
+    digest = b.submit(req(), i); token = b.approve("r1", o, digest)
     result = b.consume(token, req(), i)
     assert result["state"] == "result" and result["exit_code"] == 0 and result["stdout"] == "hello\n"
