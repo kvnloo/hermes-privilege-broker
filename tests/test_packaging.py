@@ -3,6 +3,7 @@ import json
 import os
 import stat
 import subprocess
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,12 @@ class FakeSystem:
     def service(self, enabled):
         self.calls.append(("service", enabled))
         self.enabled = enabled
+
+    def has_group(self, name):
+        return name in self.groups
+
+    def has_account(self, name):
+        return name in self.accounts
 
 
 def test_plan_is_deterministic_dry_run_and_has_one_harmless_operation(tmp_path):
@@ -91,6 +98,11 @@ def test_apply_rolls_back_partial_failure(tmp_path, monkeypatch):
         installer.apply()
     assert not (tmp_path / "etc/hermes-privilege-broker/catalog.json").exists()
     assert not system.enabled
+    assert system.accounts == set()
+    assert system.groups == set()
+    assert not (tmp_path / "etc/hermes-privilege-broker").exists()
+    assert not (tmp_path / "run/hermes-privilege-broker").exists()
+    assert not (tmp_path / "usr/lib/hermes-privilege-broker").exists()
 
 
 def test_apply_rejects_symlinked_or_wrong_existing_target(tmp_path):
@@ -142,6 +154,18 @@ def test_verify_detects_content_or_mode_drift(tmp_path):
     installer.verify()
     catalog = tmp_path / "etc/hermes-privilege-broker/catalog.json"
     catalog.write_text("{}")
+    with pytest.raises(InstallError, match="content"):
+        installer.verify()
+
+
+def test_verify_detects_dynamic_broker_config_tampering(tmp_path):
+    installer = Installer(tmp_path, FakeSystem())
+    installer.apply()
+    broker = tmp_path / "etc/hermes-privilege-broker/broker.json"
+    payload = json.loads(broker.read_text())
+    payload["catalog"] = "/tmp/attacker-catalog.json"
+    payload["requester_uids"] = [0]
+    broker.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
     with pytest.raises(InstallError, match="content"):
         installer.verify()
 
@@ -205,3 +229,20 @@ def test_install_artifact_is_deterministic_and_defaults_to_plan(tmp_path):
     assert hashlib.sha256(first.read_bytes()).digest() == hashlib.sha256(second.read_bytes()).digest()
     result = subprocess.run(["/usr/bin/python3", "-I", str(first)], check=True, capture_output=True, text=True, env={})
     assert json.loads(result.stdout)["dry_run"] is True
+
+
+def test_release_archive_hash_manifest_verifies_after_clean_extraction(tmp_path):
+    from hermes_privilege_broker.build_packet import build_archive
+    release = tmp_path / "release"
+    release.mkdir()
+    (release / "installer.pyz").write_bytes(b"installer")
+    (release / "plan.json").write_bytes(b"{}\n")
+    archive = build_archive(release, tmp_path / "packet.tar.gz")
+    extracted = tmp_path / "extracted"
+    extracted.mkdir()
+    with tarfile.open(archive, "r:gz") as packet:
+        packet.extractall(extracted, filter="data")
+    result = subprocess.run(["/usr/bin/sha256sum", "-c", "SHA256SUMS"], cwd=extracted,
+                            text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert sorted(path.name for path in extracted.iterdir()) == ["SHA256SUMS", "installer.pyz", "plan.json"]

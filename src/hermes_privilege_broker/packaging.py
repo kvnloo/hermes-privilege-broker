@@ -130,8 +130,30 @@ class Installer:
         if self.root == Path("/") and (metadata.st_uid != 0 or metadata.st_gid != 0):
             raise InstallError("unsafe Telegram credential owner")
 
-    def verify(self):
+    def _effective_manifest(self):
+        uids = {name: self.system.account(name, True, group) for name, group in (
+            ("hermes-privilege-broker", None),
+            ("hermes-privilege-requester", "hermes-privilege-requester"),
+            ("hermes-privilege-operator", "hermes-privilege-operator"),
+        )}
+        gids = {name: self.system.group(name, True) for name in (
+            "hermes-privilege-requester", "hermes-privilege-operator")}
+        effective = []
         for entry in manifest():
+            if entry["kind"] == "file" and entry["path"].endswith("broker.json"):
+                config = json.loads(entry["content"])
+                config.update(requester_uids=[uids["hermes-privilege-requester"]],
+                              operator_uids=[uids["hermes-privilege-operator"]],
+                              requester_gid=gids["hermes-privilege-requester"],
+                              operator_gid=gids["hermes-privilege-operator"])
+                entry = {**entry, "content": json.dumps(config, sort_keys=True, separators=(",", ":")) + "\n"}
+            effective.append(entry)
+        return effective
+
+    def verify(self):
+        if self.system is None:
+            self.system = LinuxSystem()
+        for entry in self._effective_manifest():
             if entry["kind"] not in {"file", "directory"}:
                 continue
             target = self._target(entry["path"])
@@ -143,7 +165,7 @@ class Installer:
                 raise InstallError(f"mode mismatch: {entry['path']}")
             if self.root == Path("/") and (metadata.st_uid != 0 or metadata.st_gid != 0):
                 raise InstallError(f"owner mismatch: {entry['path']}")
-            if entry["kind"] == "file" and not entry["path"].endswith("broker.json"):
+            if entry["kind"] == "file":
                 if target.read_bytes() != entry["content"].encode():
                     raise InstallError(f"content mismatch: {entry['path']}")
 
@@ -155,17 +177,28 @@ class Installer:
         if self.root == Path("/"):
             self._verify_token()
         snapshots = []
+        groups = ("hermes-privilege-requester", "hermes-privilege-operator")
+        accounts = (("hermes-privilege-broker", None),
+                    ("hermes-privilege-requester", "hermes-privilege-requester"),
+                    ("hermes-privilege-operator", "hermes-privilege-operator"))
+        prior_groups = {name: self.system.has_group(name) for name in groups}
+        prior_accounts = {name: self.system.has_account(name) for name, _group in accounts}
         try:
             gids = {}
-            for group in ("hermes-privilege-requester", "hermes-privilege-operator"):
+            for group in groups:
                 gids[group] = self.system.group(group, True)
             uids = {}
-            for account, group in (("hermes-privilege-broker", None), ("hermes-privilege-requester", "hermes-privilege-requester"), ("hermes-privilege-operator", "hermes-privilege-operator")):
+            for account, group in accounts:
                 uids[account] = self.system.account(account, True, group)
             for entry in manifest():
                 if entry["kind"] == "directory":
                     target = self._target(entry["path"])
                     self._check_ancestors(target)
+                    if target.exists():
+                        metadata = target.stat()
+                        snapshots.append((target, "directory", None, stat.S_IMODE(metadata.st_mode), metadata.st_uid, metadata.st_gid))
+                    else:
+                        snapshots.append((target, "absent", None, None, None, None))
                     target.mkdir(parents=True, exist_ok=True)
                     os.chmod(target, int(entry["mode"], 8))
                     if self.root == Path("/"):
@@ -177,23 +210,38 @@ class Installer:
                         config.update(requester_uids=[uids["hermes-privilege-requester"]], operator_uids=[uids["hermes-privilege-operator"]], requester_gid=gids["hermes-privilege-requester"], operator_gid=gids["hermes-privilege-operator"])
                         entry = {**entry, "content": json.dumps(config, sort_keys=True, separators=(",", ":")) + "\n"}
                     target = self._target(entry["path"])
-                    snapshots.append((target, target.read_bytes() if target.exists() else None,
-                                      stat.S_IMODE(target.stat().st_mode) if target.exists() else None))
+                    if target.exists():
+                        metadata = target.stat()
+                        snapshots.append((target, "file", target.read_bytes(), stat.S_IMODE(metadata.st_mode), metadata.st_uid, metadata.st_gid))
+                    else:
+                        snapshots.append((target, "absent", None, None, None, None))
                     self._install_file(entry)
             self.verify()
             self.system.service(True)
         except Exception as exc:
             try: self.system.service(False)
             except Exception: pass
-            for target, content, mode in reversed(snapshots):
+            for target, kind, content, mode, uid, gid in reversed(snapshots):
                 try:
-                    if content is None:
-                        target.unlink()
+                    if kind == "absent":
+                        if target.is_dir(): target.rmdir()
+                        else: target.unlink()
                     else:
-                        target.write_bytes(content)
+                        if kind == "file": target.write_bytes(content)
                         os.chmod(target, mode)
+                        if self.root == Path("/"): os.chown(target, uid, gid)
                 except FileNotFoundError:
                     pass
+                except OSError:
+                    pass
+            for account, _group in reversed(accounts):
+                if not prior_accounts[account]:
+                    try: self.system.account(account, False)
+                    except Exception: pass
+            for group in reversed(groups):
+                if not prior_groups[group]:
+                    try: self.system.group(group, False)
+                    except Exception: pass
             raise InstallError("apply failed and rolled back") from exc
 
     update = apply
@@ -233,6 +281,14 @@ class LinuxSystem:
         self._run(["/usr/sbin/groupdel", name])
         return None
 
+    def has_group(self, name):
+        import grp
+        try:
+            grp.getgrnam(name)
+        except KeyError:
+            return False
+        return True
+
     def account(self, name, present, group=None):
         if present:
             import pwd
@@ -249,6 +305,14 @@ class LinuxSystem:
         except KeyError: return None
         self._run(["/usr/sbin/userdel", name])
         return None
+
+    def has_account(self, name):
+        import pwd
+        try:
+            pwd.getpwnam(name)
+        except KeyError:
+            return False
+        return True
 
     def service(self, enabled):
         self._run(["/usr/bin/systemctl", "daemon-reload"])

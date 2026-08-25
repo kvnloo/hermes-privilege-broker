@@ -1,4 +1,8 @@
 import argparse
+import gzip
+import hashlib
+import io
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -29,6 +33,31 @@ def build(output):
         _write(archive, "__main__.py", _MAIN)
         for relative in _FILES:
             _write(archive, relative, (source / relative).read_bytes())
+    return output
+
+
+def build_archive(release, output):
+    release = Path(release)
+    output = Path(output)
+    files = sorted(path for path in release.iterdir()
+                   if path.is_file() and not path.is_symlink() and path.name != "SHA256SUMS")
+    sums = "".join(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n" for path in files).encode()
+    members = [(path.name, path.read_bytes(), 0o755 if path.stat().st_mode & 0o111 else 0o644)
+               for path in files]
+    members.append(("SHA256SUMS", sums, 0o644))
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w", format=tarfile.PAX_FORMAT) as packet:
+        for name, data, mode in sorted(members):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.mode = mode
+            info.uid = info.gid = 0
+            info.uname = info.gname = "root"
+            info.mtime = 0
+            packet.addfile(info, io.BytesIO(data))
+    with output.open("wb") as handle:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=handle, mtime=0) as compressed:
+            compressed.write(raw.getvalue())
     return output
 
 
