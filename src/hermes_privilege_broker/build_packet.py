@@ -61,6 +61,35 @@ def build_archive(release, output):
     return output
 
 
+def write_post_install_verify(release, installer_name):
+    release = Path(release)
+    if Path(installer_name).name != installer_name or not installer_name.endswith(".pyz"):
+        raise ValueError("installer_name must be a .pyz basename")
+    output = release / "post-install-verify.sh"
+    output.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "if [ \"$(/usr/bin/id -u)\" -ne 0 ]; then\n"
+        "  echo 'verification requires root' >&2\n"
+        "  exit 1\n"
+        "fi\n"
+        "PACKET_DIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\n"
+        f'/usr/bin/python3 -I "$PACKET_DIR/{installer_name}" verify\n'
+        "/usr/bin/systemctl is-active --quiet hermes-privilege-broker.service\n"
+        "/usr/bin/systemctl is-active --quiet hermes-privilege-operator-telegram.service\n"
+        "/usr/bin/getent passwd hermes-privilege-broker >/dev/null\n"
+        "/usr/bin/getent passwd hermes-privilege-requester >/dev/null\n"
+        "/usr/bin/getent passwd hermes-privilege-operator >/dev/null\n"
+        "/usr/bin/stat -c '%U:%G %a %n' \\\n"
+        "  /etc/hermes-privilege-broker/catalog.json \\\n"
+        "  /run/hermes-privilege-broker/request.sock \\\n"
+        "  /run/hermes-privilege-broker/operator.sock\n"
+        "echo 'verification=PASS'\n"
+    )
+    output.chmod(0o755)
+    return output
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("output", type=Path)

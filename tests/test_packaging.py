@@ -246,3 +246,13 @@ def test_release_archive_hash_manifest_verifies_after_clean_extraction(tmp_path)
                             text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
     assert sorted(path.name for path in extracted.iterdir()) == ["SHA256SUMS", "installer.pyz", "plan.json"]
+
+
+def test_post_install_verifier_targets_the_packaged_installer(tmp_path):
+    from hermes_privilege_broker.build_packet import write_post_install_verify
+
+    script = write_post_install_verify(tmp_path, "hermes-privilege-broker-install-deadbee.pyz")
+
+    text = script.read_text()
+    assert '"$PACKET_DIR/hermes-privilege-broker-install-deadbee.pyz" verify' in text
+    assert "0af993a" not in text
