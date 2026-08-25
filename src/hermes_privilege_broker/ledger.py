@@ -2,6 +2,7 @@ import json
 import sqlite3
 import os
 import stat
+import threading
 import time
 
 
@@ -29,7 +30,8 @@ class Ledger:
                     raise LedgerError("untrusted ledger sidecar")
         old_umask = os.umask(0o077)
         try:
-            self.db = sqlite3.connect(path, isolation_level=None)
+            self.lock = threading.RLock()
+            self.db = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA synchronous=FULL")
             self.db.execute("CREATE TABLE IF NOT EXISTS requests(id TEXT PRIMARY KEY,state TEXT NOT NULL,data TEXT NOT NULL,updated REAL NOT NULL)")
@@ -48,6 +50,10 @@ class Ledger:
         return result
 
     def transition(self, rid, state, data):
+        with self.lock:
+            self._transition(rid, state, data)
+
+    def _transition(self, rid, state, data):
         try:
             payload = json.dumps(data, sort_keys=True, separators=(",", ":"))
             self.db.execute("BEGIN IMMEDIATE")
@@ -61,5 +67,6 @@ class Ledger:
             raise LedgerError(str(exc)) from exc
 
     def get(self, rid):
-        row = self.db.execute("SELECT state,data FROM requests WHERE id=?", (rid,)).fetchone()
+        with self.lock:
+            row = self.db.execute("SELECT state,data FROM requests WHERE id=?", (rid,)).fetchone()
         return None if not row else {**json.loads(row[1]), "state": row[0]}
