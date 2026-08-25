@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: hermes-privilege-broker
+Version: 0.1.0
+Summary: Linux-only split-authority typed privilege broker
+License: Apache-2.0
+Requires-Python: >=3.11
