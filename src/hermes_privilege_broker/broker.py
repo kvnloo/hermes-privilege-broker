@@ -114,3 +114,7 @@ class Broker:
 
     def status(self, request_id):
         return self.ledger.get(request_id) or {"state": "unknown"}
+
+    def pending(self, identity):
+        self._role(identity, self.operators)
+        return self.ledger.pending()

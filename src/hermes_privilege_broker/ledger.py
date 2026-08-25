@@ -70,3 +70,10 @@ class Ledger:
         with self.lock:
             row = self.db.execute("SELECT state,data FROM requests WHERE id=?", (rid,)).fetchone()
         return None if not row else {**json.loads(row[1]), "state": row[0]}
+
+    def pending(self, limit=16):
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT data FROM requests WHERE state='pending' ORDER BY updated,id LIMIT ?", (limit,)
+            ).fetchall()
+        return [json.loads(row[0]) for row in rows]

@@ -49,6 +49,22 @@ def _client(channel, uid, gid, socket_path):
             channel.send({"client_error": type(exc).__name__, "detail": str(exc)})
 
 
+def _telegram_operator(channel, uid, gid, socket_path, repo):
+    sys.path.insert(0, str(repo / "src"))
+    from hermes_privilege_operator import telegram
+    os.setgroups([])
+    os.setgid(gid)
+    os.setuid(uid)
+    sent = []
+    telegram.telegram_api = lambda _token, method, payload: sent.append((method, payload)) or {"message_id": 1}
+    published = telegram.publish_new_pending(socket_path, "1:" + "x" * 20, 1083429746, set())
+    assert len(published) == 1 and sent[0][0] == "sendMessage"
+    request_id, digest = next(iter(published))
+    callback = {"id": "callback-1", "from": {"id": 1083429746},
+                "data": f"approve:{request_id}:{digest}"}
+    channel.send({"published": sent[0][1], "grant": telegram.send_decision(socket_path, callback, {1083429746})["grant"]})
+
+
 class RehearsalSystem:
     def __init__(self):
         self.accounts = set()
@@ -141,19 +157,24 @@ def _inner(repo, evidence, sandbox):
                                    "uid": metadata.st_uid, "gid": metadata.st_gid}
 
     requester_parent, requester_child = Pipe()
-    operator_parent, operator_child = Pipe()
     requester = Process(target=_client, args=(requester_child, 2001, 2101, request_socket))
-    operator = Process(target=_client, args=(operator_child, 2002, 2102, operator_socket))
-    requester.start(); operator.start()
+    requester.start()
     request = {"request_id": "rehearsal-id", "operation_id": "system.identity", "slots": {},
                "reason": "rootless lifecycle rehearsal"}
     requester_parent.send({"method": "submit", "request": request})
     submitted = requester_parent.recv()
     assert submitted.get("ok"), submitted
     digest = submitted["result"]["request_digest"]
-    operator_parent.send({"method": "approve", "request_id": request["request_id"],
-                          "request_digest": digest})
-    grant = operator_parent.recv()["result"]["grant"]
+    telegram_parent, telegram_child = Pipe()
+    operator = Process(target=_telegram_operator, args=(telegram_child, 2002, 2102, operator_socket, repo))
+    operator.start()
+    if not telegram_parent.poll(5):
+        operator.join(1)
+        raise RuntimeError(f"Telegram frontend failed with exit {operator.exitcode}")
+    frontend = telegram_parent.recv()
+    operator.join(2)
+    assert operator.exitcode == 0 and f"approve:{request['request_id']}:{digest}" in frontend["published"]["reply_markup"]
+    grant = frontend["grant"]
     requester_parent.send({"method": "consume", "grant": grant, "request": request})
     result = requester_parent.recv()
     assert result.get("ok") and result["result"]["state"] == "result", result
@@ -164,6 +185,9 @@ def _inner(repo, evidence, sandbox):
     request2 = {**request, "request_id": "restart-id"}
     requester_parent.send({"method": "submit", "request": request2})
     digest2 = requester_parent.recv()["result"]["request_digest"]
+    operator_parent, operator_child = Pipe()
+    operator = Process(target=_client, args=(operator_child, 2002, 2102, operator_socket))
+    operator.start()
     operator_parent.send({"method": "approve", "request_id": "restart-id", "request_digest": digest2})
     grant2 = operator_parent.recv()["result"]["grant"]
     daemon.close(); thread.join(2)
@@ -206,8 +230,9 @@ def _inner(repo, evidence, sandbox):
         "namespace": {"host_root": "read-only", "network": "private", "pid": "private",
                       "privilege": "unprivileged-user-namespace"},
         "operation": {"executable": "/usr/bin/id", "executions": 1,
-                      "flow": ["requester-submit", "operator-approve", "requester-consume", "result"],
+                      "flow": ["requester-submit", "telegram-publish", "captain-callback", "operator-approve", "requester-consume", "result"],
                       "result_state": "succeeded"},
+        "telegram_remote": "mocked",
         "replay": "denied", "restart_grant": "revoked", "sockets": sockets,
         "uninstall": {"preserved": ["/var/lib/hermes-privilege-broker/ledger.sqlite"], "residue": []},
         "failed_apply": {"preserved": ["/var/lib/hermes-privilege-broker/ledger.sqlite"], "residue": []},

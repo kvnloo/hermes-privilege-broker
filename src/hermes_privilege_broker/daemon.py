@@ -49,6 +49,8 @@ def dispatch(broker, role, message, identity):
         return broker.consume(message["grant"], message["request"], identity)
     if role == "operator" and method == "status" and set(message) == {"method", "request_id"}:
         return broker.status(message["request_id"])
+    if role == "operator" and method == "pending" and set(message) == {"method"}:
+        return broker.pending(identity)
     if role == "operator" and method == "approve" and set(message) == {"method", "request_id", "request_digest"}:
         return {"grant": broker.approve(message["request_id"], identity, message["request_digest"])}
     if role == "operator" and method == "deny" and set(message) == {"method", "request_id", "request_digest"}:

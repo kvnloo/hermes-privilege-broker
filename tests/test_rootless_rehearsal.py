@@ -20,9 +20,10 @@ def test_rootless_namespace_install_lifecycle(tmp_path):
     }
     assert payload["operation"] == {
         "executable": "/usr/bin/id", "executions": 1,
-        "flow": ["requester-submit", "operator-approve", "requester-consume", "result"],
+        "flow": ["requester-submit", "telegram-publish", "captain-callback", "operator-approve", "requester-consume", "result"],
         "result_state": "succeeded",
     }
+    assert payload["telegram_remote"] == "mocked"
     assert payload["replay"] == "denied"
     assert payload["restart_grant"] == "revoked"
     assert payload["sockets"] == {

@@ -43,6 +43,19 @@ def send_decision(operator_socket, callback, allowed_user_ids):
     return result["result"]
 
 
+def _operator_call(operator_socket, message):
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        connection.connect(operator_socket)
+        send_frame(connection, message)
+        response = json.loads(receive_frame(connection))
+    finally:
+        connection.close()
+    if not response.get("ok"):
+        raise RuntimeError("broker refused operator request")
+    return response["result"]
+
+
 def fetch_pending(operator_socket, request_id):
     if not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", request_id):
         raise ValueError("invalid request id")
@@ -77,8 +90,10 @@ def telegram_api(token, method, payload):
 
 def serve_telegram(operator_socket, token, allowed_user_ids, chat_id):
     offset = 0
+    published = set()
     while True:
-        updates = telegram_api(token, "getUpdates", {"offset": offset, "timeout": 30, "allowed_updates": '["callback_query"]'})
+        published = publish_new_pending(operator_socket, token, chat_id, published)
+        updates = telegram_api(token, "getUpdates", {"offset": offset, "timeout": 2, "allowed_updates": '["callback_query"]'})
         for update in updates:
             offset = max(offset, update["update_id"] + 1)
             callback = update.get("callback_query")
@@ -111,6 +126,18 @@ def publish_pending(operator_socket, token, chat_id, request_id):
     digest = pending["request_digest"]
     keyboard = {"inline_keyboard": [[{"text": "Approve once", "callback_data": f"approve:{request_id}:{digest}"}, {"text": "Deny", "callback_data": f"deny:{request_id}:{digest}"}]]}
     return telegram_api(token, "sendMessage", {"chat_id": chat_id, "text": render_pending(pending), "reply_markup": json.dumps(keyboard, separators=(",", ":"))})
+
+
+def publish_new_pending(operator_socket, token, chat_id, published):
+    pending = _operator_call(operator_socket, {"method": "pending"})
+    by_identity = {(item["request"]["request_id"], item["request_digest"]): item for item in pending}
+    current = set(by_identity)
+    result = set(published) & current
+    for request_id, digest in sorted(current - result):
+        keyboard = {"inline_keyboard": [[{"text": "Approve once", "callback_data": f"approve:{request_id}:{digest}"}, {"text": "Deny", "callback_data": f"deny:{request_id}:{digest}"}]]}
+        telegram_api(token, "sendMessage", {"chat_id": chat_id, "text": render_pending(by_identity[(request_id, digest)]), "reply_markup": json.dumps(keyboard, separators=(",", ":"))})
+        result.add((request_id, digest))
+    return result
 
 
 def load_operator_config(config_path, credential_path, *, require_root=True):

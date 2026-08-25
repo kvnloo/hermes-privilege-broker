@@ -16,6 +16,7 @@ from hermes_privilege_broker.ledger import Ledger, LedgerError
 from hermes_privilege_broker.protocol import canonical_digest
 from hermes_privilege_broker.transport import peer_identity, require_peer
 from hermes_privilege_broker.daemon import dispatch
+from hermes_privilege_operator import telegram
 from hermes_privilege_operator.telegram import parse_callback, render_approval
 
 
@@ -181,6 +182,37 @@ def test_telegram_rendering_is_inert_and_bounded():
     assert callback == ("approve", "r1", "a" * 64)
     with pytest.raises(PermissionError):
         parse_callback({"from": {"id": 7}, "data": "approve:r1:" + "a" * 64}, {42})
+
+
+def test_operator_frontend_discovers_and_publishes_pending_request(tmp_path, monkeypatch):
+    broker = make_broker(tmp_path)
+    requester, operator = Identity(1001, 10, 20), Identity(1002, 11, 21)
+    digest = dispatch(broker, "requester", {"method": "submit", "request": req()}, requester)["request_digest"]
+    published = []
+
+    def operator_call(message):
+        return dispatch(broker, "operator", message, operator)
+
+    monkeypatch.setattr("hermes_privilege_operator.telegram._operator_call", lambda _socket, message: operator_call(message))
+    monkeypatch.setattr("hermes_privilege_operator.telegram.telegram_api", lambda _token, method, payload: published.append((method, payload)) or {"message_id": 1})
+
+    seen = telegram.publish_new_pending("operator.sock", "1:" + "x" * 20, 42, set())
+
+    assert seen == {("r1", digest)}
+    assert published[0][0] == "sendMessage"
+    assert f"approve:r1:{digest}" in published[0][1]["reply_markup"]
+    assert telegram.publish_new_pending("operator.sock", "1:" + "x" * 20, 42, seen) == seen
+    assert len(published) == 1
+
+
+def test_pending_discovery_is_operator_only_and_bounded(tmp_path):
+    broker = make_broker(tmp_path)
+    requester, operator = Identity(1001, 10, 20), Identity(1002, 11, 21)
+    dispatch(broker, "requester", {"method": "submit", "request": req()}, requester)
+    with pytest.raises(RequestError):
+        dispatch(broker, "requester", {"method": "pending"}, requester)
+    pending = dispatch(broker, "operator", {"method": "pending"}, operator)
+    assert len(pending) == 1 and pending[0]["request"]["request_id"] == "r1"
 
 
 def test_exact_harmless_operation(tmp_path):
