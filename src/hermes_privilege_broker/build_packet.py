@@ -2,6 +2,7 @@ import argparse
 import gzip
 import hashlib
 import io
+import re
 import tarfile
 import zipfile
 from pathlib import Path
@@ -63,8 +64,8 @@ def build_archive(release, output):
 
 def write_post_install_verify(release, installer_name):
     release = Path(release)
-    if Path(installer_name).name != installer_name or not installer_name.endswith(".pyz"):
-        raise ValueError("installer_name must be a .pyz basename")
+    if re.fullmatch(r"[A-Za-z0-9._-]+\.pyz", installer_name, flags=re.ASCII) is None:
+        raise ValueError("installer_name must be a safe ASCII .pyz basename")
     output = release / "post-install-verify.sh"
     output.write_text(
         "#!/bin/sh\n"

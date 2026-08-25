@@ -256,3 +256,20 @@ def test_post_install_verifier_targets_the_packaged_installer(tmp_path):
     text = script.read_text()
     assert '"$PACKET_DIR/hermes-privilege-broker-install-deadbee.pyz" verify' in text
     assert "0af993a" not in text
+
+
+@pytest.mark.parametrize("installer_name", [
+    "$(printf OWNED).pyz",
+    "`printf OWNED`.pyz",
+    'installer"name.pyz',
+    "installer'name.pyz",
+    "installer name.pyz",
+    "installer\nname.pyz",
+    "installer\tname.pyz",
+    "installer\x00name.pyz",
+])
+def test_post_install_verifier_rejects_unsafe_installer_names(tmp_path, installer_name):
+    from hermes_privilege_broker.build_packet import write_post_install_verify
+
+    with pytest.raises(ValueError, match="safe ASCII"):
+        write_post_install_verify(tmp_path, installer_name)
