@@ -1,3 +1,0 @@
-[console_scripts]
-hermes-privilege-broker = hermes_privilege_broker.cli:main
-hermes-privilege-operator-telegram = hermes_privilege_operator.telegram:main
