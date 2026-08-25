@@ -33,6 +33,11 @@ class Ledger:
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA synchronous=FULL")
             self.db.execute("CREATE TABLE IF NOT EXISTS requests(id TEXT PRIMARY KEY,state TEXT NOT NULL,data TEXT NOT NULL,updated REAL NOT NULL)")
+            # A crash after approval but before reservation has not crossed the
+            # execution boundary. Re-open that exact durable request for a new
+            # operator decision; the old in-memory grant remains revoked.
+            self.db.execute("UPDATE requests SET state='pending' WHERE state='approved'")
+            # Once reserved, execution may have started. Never retry it.
             self.db.execute("UPDATE requests SET state='ambiguous' WHERE state IN ('reserved','running')")
         except Exception as exc:
             raise LedgerError(str(exc)) from exc

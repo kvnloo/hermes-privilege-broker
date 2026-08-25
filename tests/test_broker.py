@@ -164,6 +164,19 @@ def test_restart_marks_reserved_or_running_ambiguous_and_revokes_grants(tmp_path
         b2.consume(token, req(), i, execute=False)
 
 
+def test_restart_reopens_approved_request_for_fresh_exact_approval(tmp_path):
+    b = make_broker(tmp_path)
+    i, o = Identity(1001, 10, 20), Identity(1002, 11, 21)
+    digest = b.submit(req(), i)
+    stale_token = b.approve("r1", o, digest)
+    b2 = Broker(b.catalog, Ledger(tmp_path / "ledger.sqlite", trusted_uid=os.getuid(), allow_unsafe_ancestors=True), requester_uids={1001}, operator_uids={1002})
+    assert b2.status("r1")["state"] == "pending"
+    with pytest.raises(RequestError, match="revoked"):
+        b2.consume(stale_token, req(), i, execute=False)
+    fresh_token = b2.approve("r1", o, digest)
+    assert b2.consume(fresh_token, req(), i, execute=False) == {"state": "reserved"}
+
+
 def test_ledger_failure_prevents_execution(tmp_path, monkeypatch):
     b = make_broker(tmp_path)
     i, o = Identity(1001, 10, 20), Identity(1002, 11, 21)
