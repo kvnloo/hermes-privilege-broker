@@ -1,9 +1,8 @@
 import json
-import argparse
 import re
 import socket
-import sys
 import os
+import stat
 import urllib.parse
 import urllib.request
 from hermes_privilege_broker.daemon import receive_frame, send_frame
@@ -114,20 +113,34 @@ def publish_pending(operator_socket, token, chat_id, request_id):
     return telegram_api(token, "sendMessage", {"chat_id": chat_id, "text": render_pending(pending), "reply_markup": json.dumps(keyboard, separators=(",", ":"))})
 
 
+def load_operator_config(config_path, credential_path, *, require_root=True):
+    config_metadata = os.lstat(config_path)
+    credential_metadata = os.lstat(credential_path)
+    if not stat.S_ISREG(config_metadata.st_mode) or config_metadata.st_mode & 0o022:
+        raise PermissionError("unsafe operator config")
+    if require_root and config_metadata.st_uid != 0:
+        raise PermissionError("operator config is not root-owned")
+    if not stat.S_ISREG(credential_metadata.st_mode) or credential_metadata.st_mode & 0o077:
+        raise PermissionError("unsafe Telegram credential")
+    with open(config_path, encoding="utf-8") as handle:
+        config = json.load(handle)
+    required = {"allowed_user_ids", "chat_id", "operator_socket", "token_file"}
+    if set(config) != required or config["token_file"] != "/etc/hermes-privilege-broker/telegram-bot.token":
+        raise ValueError("invalid operator config")
+    user_ids = config["allowed_user_ids"]
+    if not isinstance(user_ids, list) or not user_ids or any(type(value) is not int for value in user_ids):
+        raise ValueError("invalid operator identities")
+    if type(config["chat_id"]) is not int or not isinstance(config["operator_socket"], str):
+        raise ValueError("invalid operator destination")
+    with open(credential_path, encoding="utf-8") as handle:
+        token = handle.read().strip()
+    if not re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]{20,}", token):
+        raise ValueError("invalid Telegram credential")
+    return config["operator_socket"], token, set(user_ids), config["chat_id"]
+
+
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("publish", "serve"))
-    parser.add_argument("--operator-socket", required=True)
-    parser.add_argument("--request-id")
-    parser.add_argument("--allowed-user-id", action="append", type=int, default=[])
-    parser.add_argument("--chat-id", type=int, required=True)
-    args = parser.parse_args()
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    if args.action == "publish":
-        if not args.request_id:
-            parser.error("publish requires --request-id")
-        publish_pending(args.operator_socket, token, args.chat_id, args.request_id)
-    else:
-        if not args.allowed_user_id:
-            parser.error("serve requires --allowed-user-id")
-        serve_telegram(args.operator_socket, token, set(args.allowed_user_id), args.chat_id)
+    config_path = "/etc/hermes-privilege-broker/operator.json"
+    credential_path = "/run/credentials/hermes-privilege-operator-telegram.service/telegram-bot.token"
+    operator_socket, token, user_ids, chat_id = load_operator_config(config_path, credential_path)
+    serve_telegram(operator_socket, token, user_ids, chat_id)
