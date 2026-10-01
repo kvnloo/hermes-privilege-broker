@@ -1,0 +1,46 @@
+version: 1
+repo: kvnloo/hermes-privilege-broker
+id: hermes-privilege-broker
+kind: suite
+summary: Split-authority typed Linux privilege broker separating request, operator approval, immutable grant, and bounded privileged execution.
+
+architecture:
+  subsystems:
+    - id: request-contract
+      name: Typed request contract
+      kind: security
+      summary: Accepts only operation IDs, typed slots, reasons, and request identity rather than arbitrary privileged command lines.
+      paths: [src/, docs/ARCHITECTURE.md]
+    - id: operator-authority
+      name: Operator approval authority
+      kind: governance
+      summary: Separates requester and operator sockets/accounts and binds approval to an immutable canonical digest.
+      paths: [operator/, src/]
+      depends_on: [request-contract]
+    - id: grant-ledger
+      name: Grant and audit ledger
+      kind: evidence
+      summary: Uses one-use monotonic grants and durable SQLite WAL transitions, revoking or marking ambiguous state after restart.
+      paths: [src/, tests/]
+      depends_on: [operator-authority]
+    - id: bounded-executor
+      name: Bounded privileged executor
+      kind: execution
+      summary: Executes verified root-owned ELF descriptors with fixed environment, cwd, timeout, output limits, and process-group containment.
+      paths: [src/, packaging/, scripts/]
+      depends_on: [grant-ledger]
+
+  implements_mechanisms: [split-authority-privilege-broker]
+  provides_interfaces: []
+  consumes_interfaces: []
+  produces_representations: []
+  consumes_representations: []
+
+  boundaries:
+    owns: [typed privilege requests, split approval authority, immutable grants, bounded privileged execution]
+    not_here: [Hermes core runtime authority, general sudo replacement, autonomous approval, Zer0 architecture authority]
+
+  evidence:
+    docs: [README.md, docs/ARCHITECTURE.md, docs/THREAT_MODEL.md, docs/TEST_EVIDENCE.md]
+    tests: [tests/]
+    schemas: []
